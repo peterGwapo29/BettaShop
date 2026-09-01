@@ -15,10 +15,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
         exit;
     }
+
+    $cooldownSeconds = 60;
+    $emailKey = strtolower($email);
+    $_SESSION['otp_requests'] = $_SESSION['otp_requests'] ?? [];
+    $lastRequestAt = $_SESSION['otp_requests'][$emailKey] ?? null;
+    if ($lastRequestAt !== null) {
+        $secondsRemaining = $cooldownSeconds - (time() - (int) $lastRequestAt);
+        if ($secondsRemaining > 0) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'A new verification code can only be sent after 60 seconds. Please wait ' . $secondsRemaining . ' seconds and try again.',
+                'cooldown_remaining' => $secondsRemaining,
+            ]);
+            exit;
+        }
+    }
     
     $_SESSION['otp']['key'] = random_int(100000, 999999);
     $_SESSION['otp']['email'] = $email;
     $_SESSION['otp']['expiry'] = time() + 900;
+    $_SESSION['otp_requests'][$emailKey] = time();
+    $_SESSION['otp_last_requested_at'] = time();
+    $_SESSION['otp_last_requested_email'] = $email;
     
     $subject = "Your Verification Code";
     $templateFile = __DIR__ . '/../email/templates/otp.html';
@@ -43,6 +62,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // OTP-entry screen with no code ever delivered.
         error_log("[otp_email.api.php] sendEmail() reported failure for {$email}");
         unset($_SESSION['otp']);
+        unset($_SESSION['otp_requests'][strtolower($email)]);
+        unset($_SESSION['otp_last_requested_at']);
+        unset($_SESSION['otp_last_requested_email']);
 
         echo json_encode([
             'success' => false,
@@ -52,7 +74,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     echo json_encode([
-        'success' => true
+        'success' => true,
+        'cooldown_remaining' => 60,
     ]);
     
     exit;

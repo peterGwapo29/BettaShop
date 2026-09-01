@@ -2,6 +2,17 @@
 
 require_once "../includes/config.inc.php";
 
+$otpCooldownRemaining = 0;
+if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
+    $now = time();
+    foreach ($_SESSION['otp_requests'] as $emailKey => $requestAt) {
+        $remaining = 60 - ($now - (int) $requestAt);
+        if ($remaining > 0) {
+            $otpCooldownRemaining = max($otpCooldownRemaining, $remaining);
+        }
+    }
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -18,7 +29,7 @@ require_once "../includes/config.inc.php";
 
 <header style="height: 250px;">
 <div class="logoitems">
-    <img src="/resources/img/logo.png" alt="betta bud logo" id="navlogo" class="navlogo" style="width: 50px;">
+    <img src="../images/logo.png" alt="betta bud logo" id="navlogo" class="navlogo" style="width: 50px;">
     <h1 id="menu" style="font: arial;" >The Betta Shop</h1>
 </div>
 <br>
@@ -27,6 +38,17 @@ require_once "../includes/config.inc.php";
 </header>
 
 <main>
+
+  <div id="refreshWarningModal" class="refresh-modal" aria-hidden="true">
+    <div class="refresh-modal-card" role="dialog" aria-modal="true" aria-labelledby="refreshWarningTitle">
+      <h3 id="refreshWarningTitle">Verification session active</h3>
+      <p>You have an active OTP verification session. A new verification code can only be sent after 60 seconds. Are you sure you want to refresh and restart?</p>
+      <div class="refresh-modal-actions">
+        <button type="button" id="btnRefreshYes" class="btn-submit">Yes</button>
+        <button type="button" id="btnRefreshNo" class="btn-secondary">No</button>
+      </div>
+    </div>
+  </div>
 
   <div class="policy-banner" style="">
         <strong>DOA Policy</strong>
@@ -62,6 +84,9 @@ require_once "../includes/config.inc.php";
         <input type="email" id="emailInput" name="emailInput" autocomplete="email" placeholder="jane@example.com" />
         <div class="field-error" id="err-emailInput">Please enter a valid email address.</div>
       </div>
+      <div class="email-match-note">
+        <strong>Important:</strong> Please enter the same email address you used when placing your order. Your order information will only appear if the email matches an existing order.
+      </div>
       <button type="button" class="btn-submit" id="btnSendCode">Send Verification Code</button>
     </div>
 
@@ -94,6 +119,11 @@ require_once "../includes/config.inc.php";
         <span>✉️</span>
         <span id="verifiedEmailDisplay" style="font-weight:600;"></span>
         <span class="verified-tag">✓ Verified</span>
+      </div>
+
+      <div class="no-orders-banner" id="noOrdersNotice" style="display:none">
+        <p><strong>No orders found for this email address.</strong> Please go back and enter the email address you used when placing your order.</p>
+        <a href="#" id="btnNoOrdersBack">Go back and try a different email</a>
       </div>
 
       <form id="doaForm" novalidate>
@@ -226,64 +256,258 @@ require_once "../includes/config.inc.php";
 
   // ── Stage 1: Send Code ──
   var sendCodeInProgress = false;
+  var currentSupportStage = 'email';
+  var verifiedEmail = '';
+  var currentOTP = '';
+  var otpCooldownTimer = null;
+  var otpCooldownRemaining = Number(<?php echo json_encode((int) $otpCooldownRemaining); ?>) || 0;
+  var refreshGuardStorageKey = 'supportOtpRefreshGuard';
+  var refreshStateStorageKey = 'supportOtpFlowState';
 
-  document.getElementById('btnSendCode').addEventListener('click', function () {
-        const sendCodeButton = this;
-        const email = document.getElementById('emailInput').value.trim();
-        const errEl = document.getElementById('err-emailInput');
-        const inputEl = document.getElementById('emailInput');
-    
-        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-          inputEl.classList.add('invalid');
-          errEl.classList.add('visible');
-          return;
+  function updateOtpButtonState(secondsRemaining) {
+    const sendCodeButton = document.getElementById('btnSendCode');
+    const resendLink = document.getElementById('btnResend');
+    const activeSeconds = Math.max(0, Number(secondsRemaining) || 0);
+
+    if (activeSeconds > 0) {
+      sendCodeButton.disabled = true;
+      sendCodeButton.textContent = 'Wait ' + activeSeconds + 's';
+      if (resendLink) {
+        resendLink.textContent = 'Resend in ' + activeSeconds + 's';
+        resendLink.classList.add('is-disabled');
+        resendLink.setAttribute('aria-disabled', 'true');
+        resendLink.style.pointerEvents = 'none';
+      }
+      return;
+    }
+
+    sendCodeButton.disabled = false;
+    sendCodeButton.textContent = 'Send Verification Code';
+    if (resendLink) {
+      resendLink.textContent = 'Resend code';
+      resendLink.classList.remove('is-disabled');
+      resendLink.setAttribute('aria-disabled', 'false');
+      resendLink.style.pointerEvents = 'auto';
+    }
+  }
+
+  function startOtpCooldown(secondsRemaining) {
+    const totalSeconds = Math.max(0, Math.ceil(Number(secondsRemaining) || 0));
+    otpCooldownRemaining = totalSeconds;
+    if (otpCooldownTimer) {
+      clearInterval(otpCooldownTimer);
+      otpCooldownTimer = null;
+    }
+
+    if (totalSeconds > 0) {
+      updateOtpButtonState(totalSeconds);
+      const startedAt = Date.now();
+      otpCooldownTimer = setInterval(function () {
+        const elapsedMs = Date.now() - startedAt;
+        const remaining = Math.max(0, totalSeconds - Math.floor(elapsedMs / 1000));
+        otpCooldownRemaining = remaining;
+        updateOtpButtonState(remaining);
+        if (remaining <= 0) {
+          clearInterval(otpCooldownTimer);
+          otpCooldownTimer = null;
         }
-        inputEl.classList.remove('invalid');
-        errEl.classList.remove('visible');
+      }, 1000);
+      return;
+    }
 
-        if (sendCodeInProgress) return;
-        sendCodeInProgress = true;
-        sendCodeButton.disabled = true;
-        sendCodeButton.textContent = 'Sending...';
-    
-        verifiedEmail = email;
-    
-        const formData = new FormData();
-        formData.append('email', verifiedEmail);
-        
-        fetch(`otp_email.api.php`, {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-            sendCodeButton.textContent = 'Code Sent';
+    otpCooldownRemaining = 0;
+    updateOtpButtonState(0);
+  }
 
-                document.getElementById('otpEmailDisplay').textContent = verifiedEmail;
+  function saveRefreshState() {
+    const state = {
+      stage: currentSupportStage,
+      email: verifiedEmail || document.getElementById('emailInput').value.trim(),
+      firstName: document.getElementById('firstName') ? document.getElementById('firstName').value : '',
+      lastName: document.getElementById('lastName') ? document.getElementById('lastName').value : '',
+      orderNumber: document.getElementById('orderNumber') ? document.getElementById('orderNumber').value : '',
+      deliveryDate: document.getElementById('deliveryDate') ? document.getElementById('deliveryDate').value : '',
+      description: document.getElementById('description') ? document.getElementById('description').value : '',
+      resolvedValue: document.getElementById('resolution') ? document.getElementById('resolution').value : '',
+      otpDigits: otpDigits.map(function (d) { return d.value; }).join(''),
+    };
+    sessionStorage.setItem(refreshStateStorageKey, JSON.stringify(state));
+  }
 
-                showStage('otp');
-                
-                setTimeout(() => {
-                    document.querySelector('.otp-digit').focus();
-                }, 80);
-            } else {
-              sendCodeInProgress = false;
-              sendCodeButton.disabled = false;
-              sendCodeButton.textContent = 'Send Verification Code';
-                errEl.textContent = data.message || 'Unable to send verification code.';
-                errEl.classList.add('visible');
-            }
-        })
-        .catch(error => {
-            console.error(error);
-            sendCodeInProgress = false;
-            sendCodeButton.disabled = false;
-            sendCodeButton.textContent = 'Send Verification Code';
-            errEl.textContent = 'Unable to send verification code.';
-            errEl.classList.add('visible');
+  function restoreRefreshState() {
+    try {
+      const rawState = sessionStorage.getItem(refreshStateStorageKey);
+      if (!rawState) return;
+      const state = JSON.parse(rawState);
+      if (!state || !state.stage) return;
+
+      if (state.email) verifiedEmail = state.email;
+      document.getElementById('emailInput').value = state.email || '';
+
+      if (state.firstName) document.getElementById('firstName').value = state.firstName;
+      if (state.lastName) document.getElementById('lastName').value = state.lastName;
+      if (state.orderNumber) document.getElementById('orderNumber').value = state.orderNumber;
+      if (state.deliveryDate) document.getElementById('deliveryDate').value = state.deliveryDate;
+      if (state.description) document.getElementById('description').value = state.description;
+      if (state.resolvedValue) document.getElementById('resolution').value = state.resolvedValue;
+      if (state.otpDigits) {
+        otpDigits.forEach(function (d, idx) {
+          d.value = state.otpDigits[idx] || '';
         });
+      }
+
+      if (state.stage === 'otp' || state.stage === 'form') {
+        document.getElementById('otpEmailDisplay').textContent = verifiedEmail || state.email || '';
+        showStage(state.stage);
+        currentSupportStage = state.stage;
+      }
+    } catch (error) {
+      console.error('Could not restore saved support state.', error);
+    }
+  }
+
+  function showRefreshWarningModal() {
+    const modal = document.getElementById('refreshWarningModal');
+    if (!modal) return;
+    modal.classList.add('visible');
+    modal.setAttribute('aria-hidden', 'false');
+  }
+
+  function hideRefreshWarningModal() {
+    const modal = document.getElementById('refreshWarningModal');
+    if (!modal) return;
+    modal.classList.remove('visible');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  function shouldWarnBeforeRefresh() {
+    return currentSupportStage === 'otp' || currentSupportStage === 'form' || !!verifiedEmail;
+  }
+
+  window.addEventListener('beforeunload', function (event) {
+    if (!shouldWarnBeforeRefresh()) {
+      sessionStorage.removeItem(refreshGuardStorageKey);
+      return;
+    }
+
+    saveRefreshState();
+    sessionStorage.setItem(refreshGuardStorageKey, '1');
+    event.preventDefault();
+    event.returnValue = '';
   });
+
+  window.addEventListener('DOMContentLoaded', function () {
+    if (otpCooldownRemaining > 0) {
+      startOtpCooldown(otpCooldownRemaining);
+    }
+
+    if (sessionStorage.getItem(refreshGuardStorageKey) === '1') {
+      restoreRefreshState();
+      showRefreshWarningModal();
+    }
+  });
+
+  document.getElementById('btnRefreshYes').addEventListener('click', function () {
+    sessionStorage.removeItem(refreshGuardStorageKey);
+    hideRefreshWarningModal();
+    resetForm();
+  });
+
+  document.getElementById('btnRefreshNo').addEventListener('click', function () {
+    sessionStorage.removeItem(refreshGuardStorageKey);
+    hideRefreshWarningModal();
+    restoreRefreshState();
+  });
+
+  document.addEventListener('keydown', function (event) {
+    const isRefreshShortcut = event.key === 'F5' || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r');
+    if (isRefreshShortcut && shouldWarnBeforeRefresh()) {
+      event.preventDefault();
+      saveRefreshState();
+      sessionStorage.setItem(refreshGuardStorageKey, '1');
+      showRefreshWarningModal();
+    }
+  });
+
+  function requestOtpEmail() {
+    const sendCodeButton = document.getElementById('btnSendCode');
+    const resendLink = document.getElementById('btnResend');
+    const email = document.getElementById('emailInput').value.trim();
+    const errEl = document.getElementById('err-emailInput');
+    const inputEl = document.getElementById('emailInput');
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      inputEl.classList.add('invalid');
+      errEl.classList.add('visible');
+      return;
+    }
+    inputEl.classList.remove('invalid');
+    errEl.classList.remove('visible');
+
+    // Guard against double-submits — whether from the Send button, the
+    // Resend link, a stray Enter keypress, or someone re-triggering the
+    // click handler while the cooldown from a previous request is still
+    // active. The server enforces the real 60s cooldown regardless, but
+    // there's no reason to fire a request the server is just going to reject.
+    if (sendCodeInProgress || otpCooldownRemaining > 0) return;
+    sendCodeInProgress = true;
+    sendCodeButton.disabled = true;
+    sendCodeButton.textContent = 'Sending...';
+    if (resendLink) {
+      resendLink.textContent = 'Sending...';
+      resendLink.classList.add('is-disabled');
+      resendLink.setAttribute('aria-disabled', 'true');
+      resendLink.style.pointerEvents = 'none';
+    }
+
+    verifiedEmail = email;
+
+    const formData = new FormData();
+    formData.append('email', verifiedEmail);
+
+    fetch(`otp_email.api.php`, {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        sendCodeInProgress = false;
+
+        if (data.success) {
+            sendCodeButton.textContent = 'Code Sent';
+            document.getElementById('otpEmailDisplay').textContent = verifiedEmail;
+            showStage('otp');
+            currentSupportStage = 'otp';
+            startOtpCooldown(60);
+            saveRefreshState();
+            setTimeout(function () {
+                document.querySelector('.otp-digit').focus();
+            }, 80);
+            return;
+        }
+
+        const cooldownSeconds = Number(data.cooldown_remaining) || 0;
+        if (cooldownSeconds > 0) {
+            // Server says the 60s cooldown (from either Send or a prior
+            // Resend) hasn't elapsed yet — sync the UI to its real remaining time.
+            startOtpCooldown(cooldownSeconds);
+        } else {
+            updateOtpButtonState(0);
+        }
+
+        errEl.textContent = data.message || 'Unable to send verification code.';
+        errEl.classList.add('visible');
+    })
+    .catch(error => {
+        console.error(error);
+        sendCodeInProgress = false;
+        updateOtpButtonState(0);
+        errEl.textContent = 'Unable to send verification code.';
+        errEl.classList.add('visible');
+    });
+  }
+
+  document.getElementById('btnSendCode').addEventListener('click', requestOtpEmail);
 
   document.getElementById('emailInput').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') document.getElementById('btnSendCode').click();
@@ -370,7 +594,17 @@ require_once "../includes/config.inc.php";
         
         document.getElementById('verifiedEmailDisplay').textContent =
             verifiedEmail;
-        
+
+        // The email matched a verified customer, but there's no
+        // guarantee it matches any *orders* — email typos, using a
+        // different address than the one on the order, guest checkouts
+        // under another address, etc. Rather than dropping the customer
+        // into a form with an empty, unusable order dropdown, show a
+        // clear explanation and a way back to try a different email.
+        const hasOrders = Array.isArray(data.orders) && data.orders.length > 0;
+        document.getElementById('noOrdersNotice').style.display = hasOrders ? 'none' : 'block';
+        document.getElementById('doaForm').style.display = hasOrders ? 'block' : 'none';
+
         showStage('form');
     
     } else {
@@ -384,7 +618,9 @@ require_once "../includes/config.inc.php";
 });
 
   document.getElementById('btnResend').addEventListener('click', function (e) {
-    
+    e.preventDefault();
+    if (this.classList.contains('is-disabled') || sendCodeInProgress || otpCooldownRemaining > 0) return;
+    requestOtpEmail();
   });
 
   document.getElementById('btnChangeEmail').addEventListener('click', function (e) {
@@ -393,8 +629,15 @@ require_once "../includes/config.inc.php";
     document.getElementById('emailInput').focus();
   });
 
+  document.getElementById('btnNoOrdersBack').addEventListener('click', function (e) {
+    e.preventDefault();
+    resetEmailStage();
+    document.getElementById('emailInput').focus();
+  });
+
   // ── Stage management ──
   function showStage(stage) {
+    currentSupportStage = stage;
     document.getElementById('stage-email').style.display = 'none';
     document.getElementById('stage-otp').style.display   = 'none';
     document.getElementById('stage-form').style.display  = 'none';
@@ -606,9 +849,18 @@ require_once "../includes/config.inc.php";
   function resetEmailStage() {
     var sendCodeButton = document.getElementById('btnSendCode');
 
+    if (otpCooldownTimer) {
+      clearInterval(otpCooldownTimer);
+      otpCooldownTimer = null;
+    }
+
     sendCodeInProgress = false;
-    sendCodeButton.disabled = false;
-    sendCodeButton.textContent = 'Send Verification Code';
+    if (otpCooldownRemaining > 0) {
+      startOtpCooldown(otpCooldownRemaining);
+    } else {
+      sendCodeButton.disabled = false;
+      sendCodeButton.textContent = 'Send Verification Code';
+    }
 
     document.getElementById('emailInput').value = '';
     document.getElementById('emailInput').classList.remove('invalid');
@@ -618,9 +870,14 @@ require_once "../includes/config.inc.php";
     document.getElementById('err-otp').classList.remove('visible');
     document.getElementById('otpEmailDisplay').textContent = '';
     document.getElementById('verifiedEmailDisplay').textContent = '';
+    document.getElementById('noOrdersNotice').style.display = 'none';
+    document.getElementById('doaForm').style.display = 'block';
 
     verifiedEmail = '';
     currentOTP = '';
+    currentSupportStage = 'email';
+    sessionStorage.removeItem(refreshGuardStorageKey);
+    sessionStorage.removeItem(refreshStateStorageKey);
     showStage('email');
   }
 

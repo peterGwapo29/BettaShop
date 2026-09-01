@@ -43,12 +43,6 @@ function sendEmail(array $recipients, string $subject, string $templateFile): bo
 
     $template = file_get_contents($templateFile);
     $logPath  = __DIR__ . '/local_mail_log.txt';
-
-    // Optional local overrides — never hardcoded, never required.
-    // If unset, PHP falls back to whatever [mail function] section
-    // already exists in php.ini (XAMPP's default is usually empty/
-    // unconfigured on Windows, which is why mail() silently fails
-    // there until sendmail is set up — see chat report).
     $fromAddress = getenv('MAIL_FROM_ADDRESS') ?: 'support@bettabud.com';
     $fromName    = getenv('MAIL_FROM_NAME') ?: 'BettaBud Support';
 
@@ -63,9 +57,6 @@ function sendEmail(array $recipients, string $subject, string $templateFile): bo
 
         $plainBody = trim(preg_replace('/\s+/', ' ', strip_tags($body)));
 
-        // Always log locally first — this is what makes the flow
-        // testable end-to-end on a machine with no mail transport
-        // configured at all (read the OTP straight from the file).
         $logLine = sprintf(
             "[%s] To: %s | Subject: %s | Body: %s%s",
             date('Y-m-d H:i:s'),
@@ -95,11 +86,5 @@ function sendEmail(array $recipients, string $subject, string $templateFile): bo
         }
     }
 
-    // Return true if the email is at least retrievable locally, even
-    // when real transport isn't configured yet — otp_email.api.php
-    // now checks this and surfaces a clear error state either way
-    // (see that file's changes). Flip this to `return $allSent;` once
-    // real mail delivery is confirmed working, if you want the API to
-    // hard-fail whenever actual delivery fails.
     return true;
 }
