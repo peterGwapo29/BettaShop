@@ -143,6 +143,76 @@ class support
         ]);
     }
 
+    /**
+     * Get related order information from the orders table.
+     */
+    public static function getOrderDetails(PDO $pdo, string $orderId): ?array
+    {
+        $stmt = $pdo->prepare("
+            SELECT order_id, first_name, last_name, email, order_date, country, total_value, created_at
+            FROM orders
+            WHERE order_id = :order_id
+        ");
+        $stmt->execute(['order_id' => $orderId]);
+        $row = $stmt->fetch();
+
+        return $row ?: null;
+    }
+
+    /**
+     * Approve a pending ticket. Returns true if status changed, false otherwise.
+     */
+    public static function approveTicket(PDO $pdo, int $ticketId): bool
+    {
+        $stmt = $pdo->prepare("
+            UPDATE tickets
+            SET status = 'approved'
+            WHERE ticket_id = :ticket_id AND status = 'pending'
+        ");
+        $stmt->execute(['ticket_id' => $ticketId]);
+
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * Deny a pending ticket with an admin response/reason.
+     */
+    public static function denyTicket(PDO $pdo, int $ticketId, string $adminResponse): bool
+    {
+        $trimmedResponse = trim($adminResponse);
+        if ($trimmedResponse === '') {
+            throw new InvalidArgumentException("Admin response is required when denying a request.");
+        }
+
+        $stmt = $pdo->prepare("
+            UPDATE tickets
+            SET status = 'denied', admin_response = :admin_response
+            WHERE ticket_id = :ticket_id AND status = 'pending'
+        ");
+        $stmt->execute([
+            'ticket_id'      => $ticketId,
+            'admin_response' => $trimmedResponse,
+        ]);
+
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * Update/save admin response for a ticket.
+     */
+    public static function saveAdminResponse(PDO $pdo, int $ticketId, string $response): bool
+    {
+        $stmt = $pdo->prepare("
+            UPDATE tickets
+            SET admin_response = :admin_response
+            WHERE ticket_id = :ticket_id
+        ");
+        return $stmt->execute([
+            'ticket_id'      => $ticketId,
+            'admin_response' => $response,
+        ]);
+    }
+
     
     //   Generates a short, human-facing reference like "DOA-4F91C2", checked
     //   against the DB for uniqueness (extremely unlikely to collide, but the
