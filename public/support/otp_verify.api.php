@@ -17,6 +17,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SESSION['otp'])) {
         $_SESSION['verified_email'] = $_SESSION['otp']['email'];
         
         unset($_SESSION['otp']);
+        unset($_SESSION['resend_cooldown_until']);
+        unset($_SESSION['otp_cooldown_until']);
         
         $order_data = users::getUserOrdersByEmail($pdo,  $_SESSION['verified_email']);
         $customer = [

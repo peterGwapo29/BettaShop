@@ -3,15 +3,33 @@
 require_once "../includes/config.inc.php";
 
 $otpCooldownRemaining = 0;
-if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
-    $now = time();
-    foreach ($_SESSION['otp_requests'] as $emailKey => $requestAt) {
-        $remaining = 60 - ($now - (int) $requestAt);
+$now = time();
+
+if (!empty($_SESSION['otp_cooldown_until'])) {
+    $remaining = (int) $_SESSION['otp_cooldown_until'] - $now;
+    if ($remaining > 0) {
+        $otpCooldownRemaining = $remaining;
+    } else {
+        unset($_SESSION['otp_cooldown_until']);
+    }
+}
+
+if (!empty($_SESSION['resend_cooldown_until']) && is_array($_SESSION['resend_cooldown_until'])) {
+    foreach ($_SESSION['resend_cooldown_until'] as $emailKey => $until) {
+        $remaining = (int) $until - $now;
         if ($remaining > 0) {
             $otpCooldownRemaining = max($otpCooldownRemaining, $remaining);
+        } else {
+            unset($_SESSION['resend_cooldown_until'][$emailKey]);
         }
     }
 }
+
+$hasActiveOtpSession = !empty($_SESSION['otp']['key']) && $now <= (int) ($_SESSION['otp']['expiry'] ?? 0);
+$hasVerifiedSession  = !empty($_SESSION['verified_email']);
+$serverSessionActive = $hasActiveOtpSession || $hasVerifiedSession;
+$serverActiveEmail   = $hasVerifiedSession ? ($_SESSION['verified_email'] ?? '') : ($hasActiveOtpSession ? ($_SESSION['otp']['email'] ?? '') : '');
+$serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'otp' : '');
 
 ?>
 <!DOCTYPE html>
@@ -257,10 +275,12 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
   // ── Stage 1: Send Code ──
   var sendCodeInProgress = false;
   var currentSupportStage = 'email';
-  var verifiedEmail = '';
+  var verifiedEmail = <?php echo json_encode($serverActiveEmail); ?> || '';
   var currentOTP = '';
   var otpCooldownTimer = null;
   var otpCooldownRemaining = Number(<?php echo json_encode((int) $otpCooldownRemaining); ?>) || 0;
+  var serverHasActiveSession = <?php echo json_encode((bool) $serverSessionActive); ?>;
+  var serverActiveStage = <?php echo json_encode($serverActiveStage); ?>;
   var refreshGuardStorageKey = 'supportOtpRefreshGuard';
   var refreshStateStorageKey = 'supportOtpFlowState';
 
@@ -322,14 +342,14 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
   function saveRefreshState() {
     const state = {
       stage: currentSupportStage,
-      email: verifiedEmail || document.getElementById('emailInput').value.trim(),
+      email: verifiedEmail || (document.getElementById('emailInput') ? document.getElementById('emailInput').value.trim() : ''),
       firstName: document.getElementById('firstName') ? document.getElementById('firstName').value : '',
       lastName: document.getElementById('lastName') ? document.getElementById('lastName').value : '',
       orderNumber: document.getElementById('orderNumber') ? document.getElementById('orderNumber').value : '',
       deliveryDate: document.getElementById('deliveryDate') ? document.getElementById('deliveryDate').value : '',
       description: document.getElementById('description') ? document.getElementById('description').value : '',
       resolvedValue: document.getElementById('resolution') ? document.getElementById('resolution').value : '',
-      otpDigits: otpDigits.map(function (d) { return d.value; }).join(''),
+      otpDigits: Array.isArray(otpDigits) ? otpDigits.map(function (d) { return d.value; }).join('') : '',
     };
     sessionStorage.setItem(refreshStateStorageKey, JSON.stringify(state));
   }
@@ -337,29 +357,56 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
   function restoreRefreshState() {
     try {
       const rawState = sessionStorage.getItem(refreshStateStorageKey);
-      if (!rawState) return;
-      const state = JSON.parse(rawState);
-      if (!state || !state.stage) return;
+      let targetStage = serverActiveStage || 'email';
+      let state = null;
 
-      if (state.email) verifiedEmail = state.email;
-      document.getElementById('emailInput').value = state.email || '';
-
-      if (state.firstName) document.getElementById('firstName').value = state.firstName;
-      if (state.lastName) document.getElementById('lastName').value = state.lastName;
-      if (state.orderNumber) document.getElementById('orderNumber').value = state.orderNumber;
-      if (state.deliveryDate) document.getElementById('deliveryDate').value = state.deliveryDate;
-      if (state.description) document.getElementById('description').value = state.description;
-      if (state.resolvedValue) document.getElementById('resolution').value = state.resolvedValue;
-      if (state.otpDigits) {
-        otpDigits.forEach(function (d, idx) {
-          d.value = state.otpDigits[idx] || '';
-        });
+      if (rawState) {
+        state = JSON.parse(rawState);
       }
 
-      if (state.stage === 'otp' || state.stage === 'form') {
-        document.getElementById('otpEmailDisplay').textContent = verifiedEmail || state.email || '';
-        showStage(state.stage);
-        currentSupportStage = state.stage;
+      if (state) {
+        if (state.stage) targetStage = state.stage;
+        if (state.email) verifiedEmail = state.email;
+        if (document.getElementById('emailInput') && state.email) {
+          document.getElementById('emailInput').value = state.email;
+        }
+        if (state.firstName && document.getElementById('firstName')) {
+          document.getElementById('firstName').value = state.firstName;
+        }
+        if (state.lastName && document.getElementById('lastName')) {
+          document.getElementById('lastName').value = state.lastName;
+        }
+        if (state.orderNumber && document.getElementById('orderNumber')) {
+          document.getElementById('orderNumber').value = state.orderNumber;
+        }
+        if (state.deliveryDate && document.getElementById('deliveryDate')) {
+          document.getElementById('deliveryDate').value = state.deliveryDate;
+        }
+        if (state.description && document.getElementById('description')) {
+          document.getElementById('description').value = state.description;
+        }
+        if (state.resolvedValue && document.getElementById('resolution')) {
+          document.getElementById('resolution').value = state.resolvedValue;
+        }
+        if (state.otpDigits && Array.isArray(otpDigits)) {
+          otpDigits.forEach(function (d, idx) {
+            d.value = state.otpDigits[idx] || '';
+          });
+        }
+      } else if (serverActiveEmail) {
+        verifiedEmail = serverActiveEmail;
+        if (document.getElementById('emailInput')) {
+          document.getElementById('emailInput').value = serverActiveEmail;
+        }
+      }
+
+      if (targetStage === 'otp' || targetStage === 'form') {
+        const displayEmail = verifiedEmail || (state && state.email) || serverActiveEmail || '';
+        const otpDisplay = document.getElementById('otpEmailDisplay');
+        const verDisplay = document.getElementById('verifiedEmailDisplay');
+        if (otpDisplay) otpDisplay.textContent = displayEmail;
+        if (verDisplay) verDisplay.textContent = displayEmail;
+        showStage(targetStage);
       }
     } catch (error) {
       console.error('Could not restore saved support state.', error);
@@ -380,8 +427,12 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
     modal.setAttribute('aria-hidden', 'true');
   }
 
+  function hasActiveVerificationSession() {
+    return currentSupportStage === 'otp' || currentSupportStage === 'form' || !!verifiedEmail || (serverHasActiveSession && currentSupportStage !== 'confirmation');
+  }
+
   function shouldWarnBeforeRefresh() {
-    return currentSupportStage === 'otp' || currentSupportStage === 'form' || !!verifiedEmail;
+    return hasActiveVerificationSession() && currentSupportStage !== 'confirmation';
   }
 
   window.addEventListener('beforeunload', function (event) {
@@ -401,7 +452,9 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
       startOtpCooldown(otpCooldownRemaining);
     }
 
-    if (sessionStorage.getItem(refreshGuardStorageKey) === '1') {
+    const wasRefreshing = sessionStorage.getItem(refreshGuardStorageKey) === '1' || (serverHasActiveSession && currentSupportStage !== 'confirmation');
+
+    if (wasRefreshing) {
       restoreRefreshState();
       showRefreshWarningModal();
     }
@@ -409,8 +462,31 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
 
   document.getElementById('btnRefreshYes').addEventListener('click', function () {
     sessionStorage.removeItem(refreshGuardStorageKey);
+    sessionStorage.removeItem(refreshStateStorageKey);
     hideRefreshWarningModal();
-    resetForm();
+
+    const formData = new FormData();
+    formData.append('action', 'start_refresh_cooldown');
+
+    fetch('otp_email.api.php', {
+      method: 'POST',
+      body: formData
+    })
+    .then(function (response) { return response.json(); })
+    .then(function (data) {
+      const cooldownSecs = Number(data.cooldown_remaining) || 60;
+      serverHasActiveSession = false;
+      serverActiveStage = '';
+      resetForm();
+      startOtpCooldown(cooldownSecs);
+    })
+    .catch(function (err) {
+      console.error('Error starting refresh cooldown on server:', err);
+      serverHasActiveSession = false;
+      serverActiveStage = '';
+      resetForm();
+      startOtpCooldown(60);
+    });
   });
 
   document.getElementById('btnRefreshNo').addEventListener('click', function () {
@@ -429,10 +505,10 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
     }
   });
 
-  function requestOtpEmail() {
+  function requestOtpEmail(isResend) {
     const sendCodeButton = document.getElementById('btnSendCode');
     const resendLink = document.getElementById('btnResend');
-    const email = document.getElementById('emailInput').value.trim();
+    const email = isResend ? (verifiedEmail || document.getElementById('emailInput').value.trim()) : document.getElementById('emailInput').value.trim();
     const errEl = document.getElementById('err-emailInput');
     const inputEl = document.getElementById('emailInput');
 
@@ -444,11 +520,7 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
     inputEl.classList.remove('invalid');
     errEl.classList.remove('visible');
 
-    // Guard against double-submits — whether from the Send button, the
-    // Resend link, a stray Enter keypress, or someone re-triggering the
-    // click handler while the cooldown from a previous request is still
-    // active. The server enforces the real 60s cooldown regardless, but
-    // there's no reason to fire a request the server is just going to reject.
+    // Guard against double-submits
     if (sendCodeInProgress || otpCooldownRemaining > 0) return;
     sendCodeInProgress = true;
     sendCodeButton.disabled = true;
@@ -464,6 +536,9 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
 
     const formData = new FormData();
     formData.append('email', verifiedEmail);
+    if (isResend) {
+      formData.append('is_resend', '1');
+    }
 
     fetch(`otp_email.api.php`, {
         method: 'POST',
@@ -478,7 +553,16 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
             document.getElementById('otpEmailDisplay').textContent = verifiedEmail;
             showStage('otp');
             currentSupportStage = 'otp';
-            startOtpCooldown(60);
+            serverHasActiveSession = true;
+            serverActiveStage = 'otp';
+
+            const cooldownSeconds = Number(data.cooldown_remaining) || 0;
+            if (cooldownSeconds > 0) {
+                startOtpCooldown(cooldownSeconds);
+            } else {
+                updateOtpButtonState(0);
+            }
+
             saveRefreshState();
             setTimeout(function () {
                 document.querySelector('.otp-digit').focus();
@@ -488,8 +572,6 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
 
         const cooldownSeconds = Number(data.cooldown_remaining) || 0;
         if (cooldownSeconds > 0) {
-            // Server says the 60s cooldown (from either Send or a prior
-            // Resend) hasn't elapsed yet — sync the UI to its real remaining time.
             startOtpCooldown(cooldownSeconds);
         } else {
             updateOtpButtonState(0);
@@ -507,7 +589,9 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
     });
   }
 
-  document.getElementById('btnSendCode').addEventListener('click', requestOtpEmail);
+  document.getElementById('btnSendCode').addEventListener('click', function () {
+    requestOtpEmail(false);
+  });
 
   document.getElementById('emailInput').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') document.getElementById('btnSendCode').click();
@@ -605,6 +689,10 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
         document.getElementById('noOrdersNotice').style.display = hasOrders ? 'none' : 'block';
         document.getElementById('doaForm').style.display = hasOrders ? 'block' : 'none';
 
+        currentSupportStage = 'form';
+        serverHasActiveSession = true;
+        serverActiveStage = 'form';
+        saveRefreshState();
         showStage('form');
     
     } else {
@@ -620,7 +708,7 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
   document.getElementById('btnResend').addEventListener('click', function (e) {
     e.preventDefault();
     if (this.classList.contains('is-disabled') || sendCodeInProgress || otpCooldownRemaining > 0) return;
-    requestOtpEmail();
+    requestOtpEmail(true);
   });
 
   document.getElementById('btnChangeEmail').addEventListener('click', function (e) {
@@ -826,6 +914,19 @@ if (!empty($_SESSION['otp_requests']) && is_array($_SESSION['otp_requests'])) {
 
       document.getElementById('stage-form').style.display = 'none';
       document.getElementById('confirmation').style.display = 'block';
+
+      currentSupportStage = 'confirmation';
+      serverHasActiveSession = false;
+      serverActiveStage = '';
+      verifiedEmail = '';
+      otpCooldownRemaining = 0;
+      if (otpCooldownTimer) {
+        clearInterval(otpCooldownTimer);
+        otpCooldownTimer = null;
+      }
+      updateOtpButtonState(0);
+      sessionStorage.removeItem(refreshGuardStorageKey);
+      sessionStorage.removeItem(refreshStateStorageKey);
 
       for (var i = 1; i <= 3; i++) {
         var item = document.getElementById('stepItem' + i);

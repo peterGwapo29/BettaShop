@@ -214,6 +214,15 @@ try {
     }
 
     $pdo->commit();
+
+    // Clear all OTP, verification, and refresh/cooldown state upon successful submission
+    unset($_SESSION['verified_email']);
+    unset($_SESSION['otp']);
+    unset($_SESSION['otp_cooldown_until']);
+    unset($_SESSION['resend_cooldown_until']);
+    unset($_SESSION['otp_requests']);
+    unset($_SESSION['otp_last_requested_at']);
+    unset($_SESSION['otp_last_requested_email']);
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();

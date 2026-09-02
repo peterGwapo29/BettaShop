@@ -6,7 +6,21 @@ require_once __DIR__ . "/../email/mailer.php";
 header('Content-Type: application/json');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = filter_var($_POST['email'], FILTER_VALIDATE_EMAIL);
+    $action = trim($_POST['action'] ?? '');
+
+    if ($action === 'start_refresh_cooldown') {
+        $_SESSION['otp_cooldown_until'] = time() + 60;
+        unset($_SESSION['otp']);
+        unset($_SESSION['verified_email']);
+        unset($_SESSION['resend_cooldown_until']);
+        echo json_encode([
+            'success' => true,
+            'cooldown_remaining' => 60,
+        ]);
+        exit;
+    }
+
+    $email = filter_var($_POST['email'] ?? '', FILTER_VALIDATE_EMAIL);
 
     if (!$email) {
         echo json_encode([
@@ -16,28 +30,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    $cooldownSeconds = 60;
+    $now = time();
     $emailKey = strtolower($email);
-    $_SESSION['otp_requests'] = $_SESSION['otp_requests'] ?? [];
-    $lastRequestAt = $_SESSION['otp_requests'][$emailKey] ?? null;
-    if ($lastRequestAt !== null) {
-        $secondsRemaining = $cooldownSeconds - (time() - (int) $lastRequestAt);
-        if ($secondsRemaining > 0) {
-            echo json_encode([
-                'success' => false,
-                'message' => 'A new verification code can only be sent after 60 seconds. Please wait ' . $secondsRemaining . ' seconds and try again.',
-                'cooldown_remaining' => $secondsRemaining,
-            ]);
-            exit;
+    $cooldownRemaining = 0;
+
+    // Check if refresh cooldown is currently active
+    if (!empty($_SESSION['otp_cooldown_until'])) {
+        $refreshRemaining = (int)$_SESSION['otp_cooldown_until'] - $now;
+        if ($refreshRemaining > 0) {
+            $cooldownRemaining = max($cooldownRemaining, $refreshRemaining);
+        } else {
+            unset($_SESSION['otp_cooldown_until']);
         }
+    }
+
+    // Check resend cooldown if this is a resend request
+    $isResend = !empty($_POST['is_resend']);
+    if ($isResend && !empty($_SESSION['resend_cooldown_until'][$emailKey])) {
+        $resendRemaining = (int)$_SESSION['resend_cooldown_until'][$emailKey] - $now;
+        if ($resendRemaining > 0) {
+            $cooldownRemaining = max($cooldownRemaining, $resendRemaining);
+        } else {
+            unset($_SESSION['resend_cooldown_until'][$emailKey]);
+        }
+    }
+
+    if ($cooldownRemaining > 0) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'A new verification code can only be sent after 60 seconds. Please wait ' . $cooldownRemaining . ' seconds and try again.',
+            'cooldown_remaining' => $cooldownRemaining,
+        ]);
+        exit;
     }
     
     $_SESSION['otp']['key'] = random_int(100000, 999999);
     $_SESSION['otp']['email'] = $email;
     $_SESSION['otp']['expiry'] = time() + 900;
-    $_SESSION['otp_requests'][$emailKey] = time();
     $_SESSION['otp_last_requested_at'] = time();
     $_SESSION['otp_last_requested_email'] = $email;
+
+    if ($isResend) {
+        $_SESSION['resend_cooldown_until'] = $_SESSION['resend_cooldown_until'] ?? [];
+        $_SESSION['resend_cooldown_until'][$emailKey] = time() + 60;
+    }
     
     $subject = "Your Verification Code";
     $templateFile = __DIR__ . '/../email/templates/otp.html';
@@ -47,7 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'email' => $email,
             'placeholders' => [
                 'otp' => $_SESSION['otp']['key'],
-                'domain' => $_ENV['domain']
+                'domain' => $_ENV['domain'] ?? 'localhost'
             ],
         ]
     ];
@@ -55,14 +91,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $sent = sendEmail($recipients, $subject, $templateFile);
 
     if (!$sent) {
-        // Previously this branch didn't exist — sendEmail()'s return
-        // value was discarded and the API always echoed success:true,
-        // even when the email genuinely failed to go out. That masked
-        // the real problem: the frontend would happily advance to the
-        // OTP-entry screen with no code ever delivered.
         error_log("[otp_email.api.php] sendEmail() reported failure for {$email}");
         unset($_SESSION['otp']);
-        unset($_SESSION['otp_requests'][strtolower($email)]);
+        if ($isResend) {
+            unset($_SESSION['resend_cooldown_until'][$emailKey]);
+        }
         unset($_SESSION['otp_last_requested_at']);
         unset($_SESSION['otp_last_requested_email']);
 
@@ -75,9 +108,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     echo json_encode([
         'success' => true,
-        'cooldown_remaining' => 60,
+        'cooldown_remaining' => $isResend ? 60 : 0,
     ]);
     
     exit;
 }
+
 
