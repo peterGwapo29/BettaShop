@@ -35,6 +35,7 @@ CREATE TABLE `orders` (
   `order_date` datetime DEFAULT NULL,
   `country` varchar(100) DEFAULT NULL,
   `total_value` decimal(10,2) DEFAULT 0.00,
+  `sku` varchar(255) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `modified_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

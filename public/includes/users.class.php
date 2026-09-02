@@ -30,12 +30,12 @@ class users
     /**
      * @param PDO    $pdo
      * @param string $email
-     * @return array<int, array{order_id:string, order_date:?string, first_name:?string, last_name:?string}>
+     * @return array<int, array{order_id:string, order_date:?string, first_name:?string, last_name:?string, sku:?string}>
      */
     public static function getUserOrdersByEmail(PDO $pdo, string $email): array
     {
         $stmt = $pdo->prepare("
-            SELECT order_id, order_date, first_name, last_name
+            SELECT order_id, order_date, first_name, last_name, sku
             FROM orders
             WHERE email = :email
             ORDER BY order_date DESC

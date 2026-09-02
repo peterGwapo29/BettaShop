@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS orders (
     order_date   DATETIME       DEFAULT NULL,  -- UNCONFIRMED, see note above
     country      VARCHAR(100)   DEFAULT NULL,
     total_value  DECIMAL(10,2)  DEFAULT 0,
+    sku          VARCHAR(255)   DEFAULT NULL,
     created_at   TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     modified_at  TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_orders_email (email)

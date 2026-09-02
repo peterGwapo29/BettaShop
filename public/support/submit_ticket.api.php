@@ -81,23 +81,47 @@ if ($resolution !== 'other') {
 if (!is_array($fishSku) || count($fishSku) === 0) {
     fail('Please select at least one SKU or "I don\'t know".');
 }
-// Sanitize each selected value — these are checkbox values from our own
-// markup, but never trust POST data blindly.
+// Sanitize each selected value
 $fishSku = array_map('trim', $fishSku);
 $fishSku = array_filter($fishSku, fn($v) => $v !== '');
-$fishSkuStored = implode(', ', $fishSku);
+if (empty($fishSku)) {
+    fail('Please select at least one SKU or "I don\'t know".');
+}
 
 if ($policyAck !== 'on' && $policyAck !== '1' && $policyAck !== 'true') {
     fail('You must acknowledge the DOA policy.');
 }
 
-// ── Re-verify the order actually belongs to the verified email ──
-// (the <select> is populated from the server, but POST data from the
-// browser is never trusted as-is)
+// ── Re-verify the order actually belongs to the verified email & retrieve verified SKU ──
 $customerOrders = users::getUserOrdersByEmail($pdo, $verifiedEmail);
-$orderIds       = array_column($customerOrders, 'order_id');
-if (!in_array($orderId, $orderIds, true)) {
+$orderMap = [];
+foreach ($customerOrders as $co) {
+    $orderMap[$co['order_id']] = $co;
+}
+if (!isset($orderMap[$orderId])) {
     fail('That order could not be matched to your verified email.');
+}
+
+$matchedOrder = $orderMap[$orderId];
+$dbOrderSku   = trim($matchedOrder['sku'] ?? '');
+
+// If order has an SKU in database, use verified SKU value(s)
+if ($dbOrderSku !== '') {
+    $dbSkus = array_map('trim', explode(',', $dbOrderSku));
+    $matchedSelected = array_values(array_filter($fishSku, fn($v) => in_array($v, $dbSkus, true)));
+    
+    if (!empty($matchedSelected)) {
+        $fishSkuStored = implode(', ', $matchedSelected);
+    } else {
+        // Fallback to verified database SKU
+        $fishSkuStored = $dbOrderSku;
+    }
+} else {
+    // If order has no SKU on file, use submitted value (or N/A)
+    $fishSkuStored = implode(', ', $fishSku);
+    if ($fishSkuStored === 'unknown') {
+        $fishSkuStored = 'N/A (No SKU on file)';
+    }
 }
 
 // ── Validate uploaded files (optional, but validated if present) ──

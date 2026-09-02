@@ -106,6 +106,51 @@ class support
     }
 
     /**
+     * Verify and retrieve ticket by matching both ticket_ref and customer email.
+     * Both must match the same database record before access is granted.
+     *
+     * @param PDO    $pdo
+     * @param string $ticketRef
+     * @param string $email
+     * @return array|null Ticket row if verified, null otherwise.
+     */
+    public static function getTicketByRefAndEmail(PDO $pdo, string $ticketRef, string $email): ?array
+    {
+        $stmt = $pdo->prepare("
+            SELECT * FROM tickets
+            WHERE ticket_ref = :ticket_ref AND LOWER(email) = LOWER(:email)
+            LIMIT 1
+        ");
+        $stmt->execute([
+            'ticket_ref' => trim($ticketRef),
+            'email'      => trim($email),
+        ]);
+        $row = $stmt->fetch();
+
+        return $row ?: null;
+    }
+
+    /**
+     * Retrieve ticket by ticket_ref only.
+     *
+     * @param PDO    $pdo
+     * @param string $ticketRef
+     * @return array|null Ticket row if found, null otherwise.
+     */
+    public static function getTicketByRef(PDO $pdo, string $ticketRef): ?array
+    {
+        $stmt = $pdo->prepare("
+            SELECT * FROM tickets
+            WHERE ticket_ref = :ticket_ref
+            LIMIT 1
+        ");
+        $stmt->execute(['ticket_ref' => trim($ticketRef)]);
+        $row = $stmt->fetch();
+
+        return $row ?: null;
+    }
+
+    /**
      * Files attached to a ticket.
      */
     public static function getTicketFiles(PDO $pdo, int $ticketId): array
@@ -149,7 +194,7 @@ class support
     public static function getOrderDetails(PDO $pdo, string $orderId): ?array
     {
         $stmt = $pdo->prepare("
-            SELECT order_id, first_name, last_name, email, order_date, country, total_value, created_at
+            SELECT order_id, first_name, last_name, email, order_date, country, total_value, sku, created_at, modified_at
             FROM orders
             WHERE order_id = :order_id
         ");

@@ -1021,6 +1021,10 @@ code {
                             <span class="info-label">Order Date</span>
                             <span class="info-value" id="modalRelDate">—</span>
                         </div>
+                        <div class="info-item">
+                            <span class="info-label">Order SKU</span>
+                            <span class="info-value"><code id="modalRelSku">—</code></span>
+                        </div>
                     </div>
                     <div id="modalOrderNotFound" class="empty-evidence" style="display:none;">
                         No matching record found in orders table.
@@ -1361,6 +1365,7 @@ function populateModal(data) {
         
         const orderDateStr = order.order_date || order.created_at;
         document.getElementById('modalRelDate').textContent = orderDateStr ? formatDate(orderDateStr) : '—';
+        document.getElementById('modalRelSku').textContent = order.sku || '—';
     } else {
         orderFoundDiv.style.display = 'none';
         orderNotFoundDiv.style.display = 'block';

@@ -1,6 +1,8 @@
 <?php
 
 require_once "../includes/config.inc.php";
+require_once "../includes/dbh.inc.php";
+require_once "../includes/users.class.php";
 
 $otpCooldownRemaining = 0;
 $now = time();
@@ -31,6 +33,18 @@ $serverSessionActive = $hasActiveOtpSession || $hasVerifiedSession;
 $serverActiveEmail   = $hasVerifiedSession ? ($_SESSION['verified_email'] ?? '') : ($hasActiveOtpSession ? ($_SESSION['otp']['email'] ?? '') : '');
 $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'otp' : '');
 
+$initialOrders = [];
+$initialCustomer = ['firstname' => '', 'lastname' => ''];
+if ($hasVerifiedSession && !empty($serverActiveEmail)) {
+    $initialOrders = users::getUserOrdersByEmail($pdo, $serverActiveEmail);
+    if (!empty($initialOrders)) {
+        $initialCustomer = [
+            'firstname' => $initialOrders[0]['first_name'] ?? '',
+            'lastname'  => $initialOrders[0]['last_name'] ?? '',
+        ];
+    }
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -47,7 +61,7 @@ $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'o
 
 <header style="height: 250px;">
 <div class="logoitems">
-    <img src="../images/logo.png" alt="betta bud logo" id="navlogo" class="navlogo" style="width: 50px;">
+    <img src="../images/logo.webp" alt="betta bud logo" id="navlogo" class="navlogo" style="width: 50px;">
     <h1 id="menu" style="font: arial;" >The Betta Shop</h1>
 </div>
 <br>
@@ -106,6 +120,10 @@ $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'o
         <strong>Important:</strong> Please enter the same email address you used when placing your order. Your order information will only appear if the email matches an existing order.
       </div>
       <button type="button" class="btn-submit" id="btnSendCode">Send Verification Code</button>
+      <div class="check-status-prompt" style="text-align: center; margin-top: 16px; font-size: 0.86rem; color: var(--muted);">
+        Already submitted a refund request?
+        <a href="../my-portal/customer/support.php" style="color: var(--blue-light); font-weight: 600; text-decoration: underline; margin-left: 4px;">Check Request Status</a>
+      </div>
     </div>
 
     <!-- ── Stage 2: OTP ── -->
@@ -242,7 +260,7 @@ $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'o
           <input type="checkbox" id="policyAck" name="policyAck" />
           <label for="policyAck">
             I confirm the fish arrived dead and that this claim is being submitted within 24 hours of delivery. I agree to the
-            <a href="#" onclick="return false;">DOA policy terms</a>.
+            <a href="../policies/user-agreement.pdf"  target="_blank" rel="noopener noreferrer">DOA policy terms</a>.
           </label>
         </div>
         <div class="field-error" id="err-policyAck" style="margin-top:6px;">You must acknowledge the DOA policy.</div>
@@ -258,7 +276,17 @@ $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'o
       <div class="check-circle">✅</div>
       <h2>Request Received</h2>
       <p>Thank you — we're sorry for your loss and we'll make this right.</p>
-      <div class="ref-number" id="refNumber"></div>
+
+      <div class="ref-block">
+        <div class="ref-label">Ticket Reference</div>
+        <div class="ref-number" id="refNumber"></div>
+      </div>
+
+      <div class="ref-important-note">
+        <strong>IMPORTANT:</strong>
+        <p>Please save or screenshot your Ticket Reference. You will need it together with your email address to check your refund/support request status and view responses from our support team.</p>
+      </div>
+
       <p>We'll review your claim and respond to <strong id="confEmail"></strong> within <strong>1–2 business days</strong>.<br />Please keep the fish and bag refrigerated (do not freeze) until we confirm your case.</p>
       <button class="btn-new" onclick="resetForm()">Submit another claim</button>
     </div>
@@ -281,6 +309,7 @@ $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'o
   var otpCooldownRemaining = Number(<?php echo json_encode((int) $otpCooldownRemaining); ?>) || 0;
   var serverHasActiveSession = <?php echo json_encode((bool) $serverSessionActive); ?>;
   var serverActiveStage = <?php echo json_encode($serverActiveStage); ?>;
+  var customerOrdersData = <?php echo json_encode($initialOrders); ?> || [];
   var refreshGuardStorageKey = 'supportOtpRefreshGuard';
   var refreshStateStorageKey = 'supportOtpFlowState';
 
@@ -652,6 +681,7 @@ $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'o
     .then(data => {
     
     if (data.success) {
+        customerOrdersData = data.orders || [];
         document.getElementById('firstName').value =
             data.customer.firstname;
         
@@ -676,6 +706,8 @@ $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'o
         
         });
         
+        renderOrderSkus(orderSelect.value);
+
         document.getElementById('verifiedEmailDisplay').textContent =
             verifiedEmail;
 
@@ -743,25 +775,61 @@ $serverActiveStage   = $hasVerifiedSession ? 'form' : ($hasActiveOtpSession ? 'o
   }
 
   // ── Order → SKU population ──
-  // NOTE: per-order SKU/item data isn't available from the backend yet
-  // (no confirmed order-items table — see support.class.php notes), so
-  // this renders a single "I don't know" option, matching the error
-  // copy that already referenced it ("...or 'I don't know'."). Without
-  // this, skuBox stayed empty forever and the required-SKU validation
-  // could never pass for any order. Swap this for real per-SKU
-  // checkboxes once order-item data is available.
-  document.getElementById('orderNumber').addEventListener('change', function () {
-    var skuBox = document.getElementById('skuBox');
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
 
-    if (!this.value) {
+  function renderOrderSkus(orderId) {
+    var skuBox = document.getElementById('skuBox');
+    if (!skuBox) return;
+
+    if (!orderId) {
       skuBox.innerHTML = '<div class="sku-placeholder">Select an order above to see items</div>';
       return;
     }
 
-    skuBox.innerHTML =
-      '<label style="display:flex;align-items:center;gap:8px;font-weight:400;">' +
-      '<input type="checkbox" name="fishSku[]" value="unknown"> I don\'t know which item(s)' +
-      '</label>';
+    var selectedOrder = customerOrdersData.find(function (o) {
+      return String(o.order_id) === String(orderId);
+    });
+
+    var rawSku = selectedOrder ? (selectedOrder.sku || '') : '';
+    rawSku = rawSku.trim();
+
+    if (rawSku !== '') {
+      var skus = rawSku.split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+      var html = '';
+      skus.forEach(function (sku, idx) {
+        var safeSku = escapeHtml(sku);
+        var isChecked = skus.length === 1 ? ' checked' : '';
+        html += '<label style="display:flex;align-items:center;gap:8px;font-weight:500;margin-bottom:6px;cursor:pointer;">' +
+                '<input type="checkbox" name="fishSku[]" value="' + safeSku + '"' + isChecked + ' onchange="setError(\'fishSku\', false);"> ' +
+                '<span><code style="background:#eef5fb;padding:2px 6px;border-radius:4px;font-size:0.88rem;color:var(--blue-deep);">' + safeSku + '</code></span>' +
+                '</label>';
+      });
+
+      html += '<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px;font-size:0.85rem;color:var(--muted);cursor:pointer;">' +
+              '<input type="checkbox" name="fishSku[]" value="unknown" onchange="setError(\'fishSku\', false);"> I don\'t know which item(s)' +
+              '</label>';
+
+      skuBox.innerHTML = html;
+    } else {
+      skuBox.innerHTML =
+        '<label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;">' +
+        '<input type="checkbox" name="fishSku[]" value="unknown" checked onchange="setError(\'fishSku\', false);"> No SKU on file — General item claim' +
+        '</label>';
+    }
+  }
+
+  document.getElementById('orderNumber').addEventListener('change', function () {
+    renderOrderSkus(this.value);
+    setError('orderNumber', false);
+    setError('fishSku', false);
   });
 
   // ── Resolution "Other" ──
